@@ -22,7 +22,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "keypad.h" 
-//#include "ring_buffer.h"
+#include "ring_buffer.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -32,6 +33,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define RB_CAPACITY 6
 
 /* USER CODE END PD */
 
@@ -41,7 +43,25 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+//UART_HandleTypeDef huart2;
+
 UART_HandleTypeDef huart2;
+
+
+/* -- Ring Buffer -- */
+static uint8_t ring_buffer_memory[RB_CAPACITY];
+static ring_buffer_t rb;
+
+/* 2) Variable para almacenar temporalmente el byte recibido por UART (Rx) */
+static uint8_t rx_char;
+
+/* 3) Estado de la 'puerta' (LED) */
+static uint8_t door_state = 0; // 0 = cerrada, 1 = abierta
+
+/* -- Variables para Keypad -- */
+uint32_t key_pressed_tick = 0;
+uint16_t column_pressed = 0;
+uint32_t debounce_tick = 0;
 
 /* USER CODE BEGIN PV */
 
@@ -52,15 +72,15 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+// Función que leerá del ring buffer y reconocerá comandos #*X*#
+static void process_command(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-uint32_t key_pressed_tick = 0;
-uint16_t column_pressed = 0;
-
-uint32_t debounce_tick = 0;
+/**
+ * @brief Callback de EXTI (interrupción externa) para detectar la tecla presionada (Keypad)
+ */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   if ((debounce_tick + 200) > HAL_GetTick()) {
@@ -70,6 +90,20 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   key_pressed_tick = HAL_GetTick();
   column_pressed = GPIO_Pin;
 }
+/**
+ * @brief Callback de UART (cuando recibe 1 byte)
+ */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART2)
+    {
+        // Guardamos el byte recibido en el ring buffer
+        ring_buffer_write(&rb, rx_char);
+        // Reactivamos la recepción para el siguiente byte
+        HAL_UART_Receive_IT(&huart2, &rx_char, 1);
+    }
+}
+
 /* USER CODE END 0 */
 
 
@@ -91,6 +125,7 @@ int main(void)
   HAL_Init();
 
 
+
   /* USER CODE BEGIN Init */
 
   /* USER CODE END Init */
@@ -105,6 +140,11 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
+
+  
+  ring_buffer_init(&rb, ring_buffer_memory, RB_CAPACITY);
+  HAL_UART_Receive_IT(&huart2, &rx_char, 1);
+
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
@@ -113,15 +153,22 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   //ring_buffer_init(&rb, ring_buffer_memory, RB_CAPACITY);
   keypad_init();
-  HAL_UART_Transmit(&huart2, (uint8_t *)"Hello World\n", 12, 100);
+  // Mensaje de bienvenida
+  char start_msg[] = "Sistema de Control de Acceso Iniciado\r\n";
+  HAL_UART_Transmit(&huart2, (uint8_t*)start_msg, sizeof(start_msg)-1, 100);
+  
+  //HAL_UART_Transmit(&huart2, (uint8_t *)"Hello World\n", 12, 100);
   while (1) {
     if (column_pressed != 0 && (key_pressed_tick + 5) < HAL_GetTick() ) {
       uint8_t key = keypad_scan(column_pressed);
       HAL_UART_Transmit(&huart2, &key, 1, 100);
+
+      ring_buffer_write(&rb, key); // Guardo el carácter en el ring buffer
+     // process_command();  // Procesa los comandos en el ring buffer
       column_pressed = 0;
     }
     /* USER CODE END WHILE */
-
+    process_command();  // Procesa los comandos en el ring buffer
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -291,6 +338,94 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+static void process_command(void)
+{
+    // Buffer auxiliar para "reconstruir" comandos
+    static uint8_t command_buffer[8];
+    // Índice que indica cuántos chars hemos acumulado en command_buffer
+    static uint8_t idx = 0;
+
+    uint8_t data; // Byte temporal para leer del ring buffer
+
+    // Mientras haya algo en el ring buffer
+    while (ring_buffer_read(&rb, &data))
+    {
+        // Imprimir el byte leído para ver qué llegó
+        HAL_UART_Transmit(&huart2, &data, 1, 100);
+
+        // Mostrar cuántos elementos quedarán en el buffer tras este read
+        // (Debería ir bajando, a menos que entren más datos simultáneamente)
+        char debug_msg[40];
+        uint8_t current_size = ring_buffer_size(&rb);
+        sprintf(debug_msg, "[DEBUG] Tam. buffer: %u\r\n", current_size);
+        HAL_UART_Transmit(&huart2, (uint8_t*)debug_msg, strlen(debug_msg), 100);
+
+        // Almacenar el byte en command_buffer
+        command_buffer[idx++] = data;
+
+        // Evitar pasarnos de 'command_buffer'
+        if (idx >= sizeof(command_buffer))
+        {
+            idx = 0;
+        }
+
+        // Verificar si hay 5 chars para detectar #*X*#
+        if (idx >= 5)
+        {
+            if (command_buffer[idx-5] == '#' &&
+                command_buffer[idx-4] == '*' &&
+                command_buffer[idx-2] == '*' &&
+                command_buffer[idx-1] == '#')
+            {
+                // Extraer comando central
+                uint8_t cmd = command_buffer[idx-3];
+
+                // Reiniciamos idx para buscar un nuevo comando
+                idx = 0;
+
+                // Ejecutar acción
+                switch (cmd)
+                {
+                    case 'A': // #*A*#
+                        door_state = 1; // Puerta abierta
+                        HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+                        HAL_UART_Transmit(&huart2,
+                          (uint8_t*)"\r\nPuerta abierta\r\n", 18, 100);
+                        break;
+
+                    case 'C': // #*C*#
+                        door_state = 0; // Puerta cerrada
+                        HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+                        HAL_UART_Transmit(&huart2,
+                          (uint8_t*)"\r\nPuerta cerrada\r\n", 18, 100);
+                        break;
+
+                    case '1': // #*1*#
+                        if (door_state)
+                            HAL_UART_Transmit(&huart2,
+                              (uint8_t*)"\r\nLa puerta esta abierta\r\n", 26, 100);
+                        else
+                            HAL_UART_Transmit(&huart2,
+                              (uint8_t*)"\r\nLa puerta esta cerrada\r\n", 27, 100);
+                        break;
+
+                    case '0': // #*0*#
+                        // Limpia el ring buffer
+                        ring_buffer_reset(&rb);
+                        HAL_UART_Transmit(&huart2,
+                          (uint8_t*)"\r\nRing buffer limpiado\r\n", 25, 100);
+                        break;
+
+                    default:
+                        HAL_UART_Transmit(&huart2,
+                          (uint8_t*)"\r\nComando invalido\r\n", 20, 100);
+                        break;
+                } // end switch
+            }
+        }
+    } // end while (ring_buffer_read(...))
+}
 
 /* USER CODE END 4 */
 

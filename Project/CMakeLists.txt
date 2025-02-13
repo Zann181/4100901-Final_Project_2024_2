@@ -48,7 +48,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Drivers/keypad/keypad.c
-    Drivers/ring_buffer/ring_buffer.c
+    # Drivers/ring_buffer/access_control.c
     # Add user sources here
 )
 
