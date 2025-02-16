@@ -1,0 +1,5 @@
+C:/Users/maleg/Videos/zann/Control_acceso/build/Debug/CMakeFiles/4100901-Final_Project_2024_2.dir
+C:/Users/maleg/Videos/zann/Control_acceso/build/Debug/CMakeFiles/edit_cache.dir
+C:/Users/maleg/Videos/zann/Control_acceso/build/Debug/CMakeFiles/rebuild_cache.dir
+C:/Users/maleg/Videos/zann/Control_acceso/build/Debug/cmake/stm32cubemx/CMakeFiles/edit_cache.dir
+C:/Users/maleg/Videos/zann/Control_acceso/build/Debug/cmake/stm32cubemx/CMakeFiles/rebuild_cache.dir
